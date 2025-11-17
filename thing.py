@@ -114,6 +114,33 @@ def run_multi_dataset_classification(use_pytorch=True):
         test_data, _ = load_txt_data(test_file)
 
         train_labels = train_labels.astype(int)
+        # --------------------  
+        # CHECK 1: Sample size  
+        # --------------------
+        print(f"[DEBUG] Dataset #{idx} sample count: {len(train_data)}")
+        if len(train_data) < 200:
+            print("[WARNING] Very small dataset. Perfect training accuracy may be normal.")
+
+        # --------------------  
+        # CHECK 2: Duplicate rows  
+        # --------------------
+        unique_rows = np.unique(train_data, axis=0)
+        if len(unique_rows) < len(train_data):
+            print(f"[WARNING] Dataset #{idx} contains duplicate rows "
+                f"({len(train_data) - len(unique_rows)} duplicates). "
+                "Perfect training accuracy becomes very likely.")
+
+        # --------------------  
+        # CHECK 3: Label distribution  
+        # --------------------
+        labels, counts = np.unique(train_labels, return_counts=True)
+        print(f"[DEBUG] Label distribution: {dict(zip(labels, counts))}")
+        if len(labels) == 1:
+            print("[ERROR] Dataset has only ONE unique label. Model trivializes and loss becomes zero.")
+        elif any(c < 5 for c in counts):
+            print("[WARNING] Some classes have extremely low sample counts. "
+                "Model may overfit them easily, causing loss=0.0.")
+
 
         # Fix label range: convert 1–N → 0–(N–1)
         shift = 0
