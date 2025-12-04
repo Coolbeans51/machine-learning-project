@@ -10,6 +10,6 @@ The source code folder will contain 2 separate folders, each containing the trai
 - After the venv is finished installing, type “.venv/Scripts/Activate.ps1” into the terminal to activate the virtual machine. 
 - Change directories to whichever program you want to test first, either classification or spam email detection
 - Then, run the python file in that folder. Compare the results of the programs to the actual results. 
-- The classification results are in the files Predictions1.txt, Predictions2.txt, Predictions3.txt and Predictions4.txt. Each predictions file corresponds to a test data file (e.g. TestData1.txt to Predictions1.txt). 
-- The spam email detection results are in the file YourLastNameSpam.txt, which corresponds to spam_test.csv.
+- The classification results are in the files ThekveliPredictions1.txt, ThekveliPredictions2.txt, ThekveliPredictions3.txt and ThekveliPredictions4.txt. Each predictions file corresponds to a test data file (e.g. TestData1.txt to ThekveliPredictions1.txt). 
+- The spam email detection results are in the file ThekveliSpam.txt, which corresponds to spam_test.csv.
 - After you are finished with testing out all the programs., while in the virtual environment, type “deactivate” in the terminal to exit the virtual environment.
