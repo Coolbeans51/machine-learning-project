@@ -106,12 +106,9 @@ pipeline = Pipeline([
 # -----------------------------------------------------------
 
 param_grid = {
-    "clf__n_estimators": [100, 200, 300],
-    "clf__max_depth": [10, 20, 30],
-    "clf__min_samples_split": [5, 10, 15],
-    "clf__min_samples_leaf": [2, 4, 6],
-    "clf__max_features": ['sqrt','log2'],
-    "clf__class_weight": ['balanced']
+    "clf__n_estimators": [100],
+    "clf__max_depth": [10, None],
+    "clf__class_weight": ["balanced"]
 }
 
 grid = GridSearchCV(
@@ -168,5 +165,5 @@ test_predictions = best_model.predict(X_test)
 # 10. SAVE OUTPUT FILE
 # -----------------------------------------------------------
 
-np.savetxt("YourLastNameSpam.txt", test_predictions, fmt="%d")
-print("\nSaved prediction file: YourLastNameSpam.txt")
+np.savetxt("ThekveliSpam.txt", test_predictions, fmt="%d")
+print("\nSaved prediction file: ThekveliSpam.txt")

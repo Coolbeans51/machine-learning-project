@@ -230,8 +230,8 @@ def run_multi_dataset_classification(use_pytorch=True, use_cv_for_dataset4=True)
         if label_shift == 1:
             test_preds += 1
 
-        np.savetxt(f"Predictions{idx}.txt", test_preds, fmt='%d')
-        print(f"Saved Predictions{idx}.txt")
+        np.savetxt(f"ThekveliPredictions{idx}.txt", test_preds, fmt='%d')
+        print(f"Saved ThekveliPredictions{idx}.txt")
 
 
 # Run
