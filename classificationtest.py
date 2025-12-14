@@ -1,19 +1,16 @@
 import os
 import glob
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.feature_selection import VarianceThreshold
 
 # ====================================================
 #  Utilities
 # ====================================================
+
 def load_txt_data(data_file, label_file=None):
     data = np.loadtxt(data_file)
     labels = np.loadtxt(label_file, dtype=int) if label_file else None
@@ -39,15 +36,20 @@ def preprocess(train_data, test_data):
 
 
 # ====================================================
-#  Main Runner (FIXED)
+#  Main Runner (Validation-Aware)
 # ====================================================
+
 def run_multi_dataset_classification():
-    accuracies = []
+    cv_accuracies = []
+    train_accuracies = []
+    precisions = []
+    recalls = []
+    f1s = []
 
     data_files = sorted(glob.glob("TrainData*.txt"))
     if not data_files:
         print("No training files found.")
-        return accuracies
+        return cv_accuracies, train_accuracies, precisions, recalls, f1s
 
     for data_file in data_files:
         idx = data_file.split("TrainData")[-1].split(".")[0]
@@ -71,9 +73,11 @@ def run_multi_dataset_classification():
         gammas = ['scale', 0.01, 0.001]
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-        best_acc = 0.0
+        best_val_acc = 0.0
+        best_val_metrics = None
         best_model = None
 
+        # Hyperparameter search with validation accuracy tracking
         for C in Cs:
             for gamma in gammas:
                 fold_accs = []
@@ -83,40 +87,67 @@ def run_multi_dataset_classification():
                     preds = svm.predict(train_data[va])
                     fold_accs.append(accuracy_score(train_labels[va], preds))
 
-                mean_acc = np.mean(fold_accs)
-                if mean_acc > best_acc:
-                    best_acc = mean_acc
+                mean_val_acc = np.mean(fold_accs)
+                if mean_val_acc > best_val_acc:
+                    # Compute precision, recall, f1 on all folds
+                    all_preds = []
+                    all_true = []
+                    for tr, va in skf.split(train_data, train_labels):
+                        svm_tmp = SVC(kernel='rbf', C=C, gamma=gamma, class_weight='balanced')
+                        svm_tmp.fit(train_data[tr], train_labels[tr])
+                        p = svm_tmp.predict(train_data[va])
+                        all_preds.extend(p)
+                        all_true.extend(train_labels[va])
+                    prec = precision_score(all_true, all_preds, average='macro', zero_division=0)
+                    rec = recall_score(all_true, all_preds, average='macro', zero_division=0)
+                    f1v = f1_score(all_true, all_preds, average='macro', zero_division=0)
+
+                    best_val_metrics = (prec, rec, f1v)
+                    best_val_acc = mean_val_acc
                     best_model = SVC(kernel='rbf', C=C, gamma=gamma, class_weight='balanced')
 
-        print(f"[SUMMARY] Dataset {idx} CV Accuracy: {best_acc:.4f}")
-        accuracies.append(best_acc)
+        print(f"[SUMMARY] Dataset {idx} Validation Accuracy (CV): {best_val_acc:.4f}")
+        cv_accuracies.append(best_val_acc)
+        precisions.append(best_val_metrics[0])
+        recalls.append(best_val_metrics[1])
+        f1s.append(best_val_metrics[2])
 
+        # Train final model on full training data
         best_model.fit(train_data, train_labels)
+        train_preds = best_model.predict(train_data)
+        train_acc = accuracy_score(train_labels, train_preds)
+        train_accuracies.append(train_acc)
         test_preds = best_model.predict(test_data)
 
         if label_shift:
             test_preds += 1
 
         np.savetxt(f"ThekveliPredictions{idx}.txt", test_preds, fmt='%d')
+        print(f"Training Accuracy: {train_acc:.4f}")
+        print(f"Precision (macro): {best_val_metrics[0]:.4f}")
+        print(f"Recall (macro):    {best_val_metrics[1]:.4f}")
+        print(f"F1-score (macro):  {best_val_metrics[2]:.4f}")
         print(f"Saved ThekveliPredictions{idx}.txt")
 
-    return accuracies
+    return cv_accuracies, train_accuracies, precisions, recalls, f1s
 
 
 # ====================================================
 #  Entry Point
 # ====================================================
 if __name__ == '__main__':
-    accuracies = run_multi_dataset_classification()
+    cv_accuracies, train_accuracies, precisions, recalls, f1s = run_multi_dataset_classification()
 
     print("\n" + "="*60)
-    print("OVERALL ACCURACY SUMMARY")
+    print("OVERALL METRIC SUMMARY")
     print("="*60)
 
-    if len(accuracies) > 0:
-        for i, acc in enumerate(accuracies, start=1):
-            print(f"Dataset {i}: CV Accuracy = {acc:.4f}")
+    if len(cv_accuracies) > 0:
+        for i, acc in enumerate(cv_accuracies, start=1):
+            print(f"Dataset {i}: Validation Accuracy = {acc:.4f}")
         print("-"*60)
-        print(f"Average CV Accuracy: {np.mean(accuracies):.4f}")
-    else:
-        print("No datasets were processed.")
+        print(f"Average Validation Accuracy: {np.mean(cv_accuracies):.4f}")
+        print(f"Average Training Accuracy:   {np.mean(train_accuracies):.4f}")
+        print(f"Average Precision (macro):  {np.mean(precisions):.4f}")
+        print(f"Average Recall (macro):     {np.mean(recalls):.4f}")
+        print(f"Average F1-score (macro):   {np.mean(f1s):.4f}")
