@@ -1,122 +1,16 @@
 import os
 import glob
 import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score
-from sklearn.utils.class_weight import compute_class_weight
-
-
-
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.feature_selection import VarianceThreshold
 
 # ====================================================
-#  Dataset + PyTorch SVM model
+#  Utilities
 # ====================================================
-class SVMDataset(Dataset):
-    def __init__(self, data, labels):
-        self.data = torch.FloatTensor(data)
-        self.labels = torch.LongTensor(labels)
-    def __len__(self):
-        return len(self.data)
-    def __getitem__(self, idx):
-        return self.data[idx], self.labels[idx]
 
-
-class PyTorchSVMClassifier(nn.Module):
-    def __init__(self, input_size, num_classes):
-        super().__init__()
-        self.linear = nn.Linear(input_size, num_classes)
-    def forward(self, x):
-        return self.linear(x)
-
-
-def multiclass_hinge_loss(outputs, labels, margin=1.0, class_weights=None):
-    correct_scores = outputs[torch.arange(outputs.size(0)), labels].unsqueeze(1)
-    margins = torch.clamp(outputs - correct_scores + margin, min=0.0)
-    margins[torch.arange(outputs.size(0)), labels] = 0.0
-    if class_weights is not None:
-        sample_weights = class_weights[labels]
-        margins = margins * sample_weights.unsqueeze(1)
-    return margins.sum() / outputs.size(0)
-
-
-def train_pytorch_svm(train_data, train_labels, num_classes, num_epochs=100, lr=0.01, use_class_weights=True):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if isinstance(train_data, pd.DataFrame):
-        train_data = train_data.values
-    dataset = SVMDataset(train_data, train_labels)
-    loader = DataLoader(dataset, batch_size=128, shuffle=True)
-
-    model = PyTorchSVMClassifier(train_data.shape[1], num_classes).to(device)
-    optimizer = optim.SGD(model.parameters(), lr=lr, weight_decay=0.3)
-    class_weights_tensor = None
-    if use_class_weights:
-        unique_classes = np.unique(train_labels)
-        class_weights = compute_class_weight('balanced', classes=unique_classes, y=train_labels)
-        class_weights_full = np.ones(num_classes, dtype=np.float32)
-        for i, cls in enumerate(unique_classes):
-            class_weights_full[cls] = class_weights[i]
-            class_weights_tensor = torch.FloatTensor(class_weights_full).to(device)
-        print(f"[INFO] Using class weights: {class_weights}")
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        total_loss = 0.0
-        for X, y in loader:
-            X, y = X.to(device), y.to(device)
-            outputs = model(X)
-            loss = multiclass_hinge_loss(outputs, y, class_weights=class_weights_tensor)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-        if epoch % 20 == 0 or epoch in [1, num_epochs]:
-            print(f"Epoch [{epoch}/{num_epochs}] Loss: {total_loss/len(loader):.4f}")
-
-    return model
-
-
-def predict_pytorch(model, data):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if isinstance(data, pd.DataFrame):
-        data = data.values
-    model.eval()
-    with torch.no_grad():
-        logits = model(torch.FloatTensor(data).to(device))
-        _, preds = torch.max(logits, 1)
-    return preds.cpu().numpy()
-
-
-# Class distribution 
-
-def print_class_distribution(labels, title="Class distribution"):
-  unique_classes, counts = np.unique(labels, return_counts=True)
-  total_samples = len(labels)
-  print(f"\n{title}")
-  print(f"{'Class':<10} {'Count':<10} {'Percentage':<15} {'Bar Chart'}")
-  max_count = counts.max()
-  for cls, count in zip(unique_classes,counts):
-    percentage = (count/total_samples) * 100
-    bar_length = int((count/max_count) * 30)
-    bar = '#' * bar_length
-    print(f"{cls:<10} {count:<10} {percentage:<14.2f}% {bar}")
-    print(f"Total Samples: {total_samples}")
-    print(f"Number of class: {len(unique_classes)}")
-    print(f"Min Samples per class: {counts.min()}")
-    print(f"Max samples per class: {counts.max()}")
-    print(f"Imbalance ratio (max/min): {counts.max() / counts.min():.2f}")
-    print()
-    return unique_classes,counts
-        
-# ====================================================
-#  Loading + Preprocessing
-# ====================================================
 def load_txt_data(data_file, label_file=None):
     data = np.loadtxt(data_file)
     labels = np.loadtxt(label_file, dtype=int) if label_file else None
@@ -133,107 +27,127 @@ def preprocess(train_data, test_data):
     train_data = np.where(np.isnan(train_data), col_means, train_data)
     test_data = np.where(np.isnan(test_data), col_means, test_data)
 
+    vt = VarianceThreshold(threshold=1e-4)
+    train_data = vt.fit_transform(train_data)
+    test_data = vt.transform(test_data)
+
     scaler = StandardScaler()
     return scaler.fit_transform(train_data), scaler.transform(test_data)
 
 
 # ====================================================
-#  Main multi-dataset runner
+#  Main Runner (Validation-Aware)
 # ====================================================
-def run_multi_dataset_classification(use_pytorch=True, use_cv_for_dataset4=True):
+
+def run_multi_dataset_classification():
+    cv_accuracies = []
+    train_accuracies = []
+    precisions = []
+    recalls = []
+    f1s = []
 
     data_files = sorted(glob.glob("TrainData*.txt"))
     if not data_files:
         print("No training files found.")
-        return
+        return cv_accuracies, train_accuracies, precisions, recalls, f1s
 
     for data_file in data_files:
-
         idx = data_file.split("TrainData")[-1].split(".")[0]
         label_file = f"TrainLabel{idx}.txt"
         test_file = f"TestData{idx}.txt"
 
-        print(f"\n{'='*50}")
-        print(f"=== Processing dataset #{idx} ===")
-        print(f"{'='*50}")
+        print(f"\n{'='*60}")
+        print(f"Processing dataset #{idx}")
+        print(f"{'='*60}")
 
         train_data, train_labels = load_txt_data(data_file, label_file)
         test_data, _ = load_txt_data(test_file)
 
-        # Convert labels
-        train_labels = train_labels.astype(int)
-        if train_labels.min() == 1:
+        label_shift = 1 if train_labels.min() == 1 else 0
+        if label_shift:
             train_labels -= 1
-            label_shift = 1
-        else:
-            label_shift = 0
-
-        num_classes = int(train_labels.max()) + 1
-        print(f"Samples: {len(train_labels)}, Classes: {num_classes}")
-        
-        # Show class distribution
-        unique, counts = np.unique(train_labels, return_counts=True)
-        print(f"Class distribution: {dict(zip(unique, counts))}")
-              
-        print_class_distribution (train_labels, "Original Class Distribution")
 
         train_data, test_data = preprocess(train_data, test_data)
 
-        # Create consistent feature names
-        feature_names = [f"feature_{i}" for i in range(train_data.shape[1])]
+        Cs = [0.1, 1, 10, 100]
+        gammas = ['scale', 0.01, 0.001]
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-        # ======================================================
-        #  MODEL TRAINING
-        # ======================================================
-        trained = None
-        uses_lgbm = False
+        best_val_acc = 0.0
+        best_val_metrics = None
+        best_model = None
 
-        # ------------------------------------------------------
-        #  LightGBM with CV for dataset 4
-        # ------------------------------------------------------
+        # Hyperparameter search with validation accuracy tracking
+        for C in Cs:
+            for gamma in gammas:
+                fold_accs = []
+                for tr, va in skf.split(train_data, train_labels):
+                    svm = SVC(kernel='rbf', C=C, gamma=gamma, class_weight='balanced')
+                    svm.fit(train_data[tr], train_labels[tr])
+                    preds = svm.predict(train_data[va])
+                    fold_accs.append(accuracy_score(train_labels[va], preds))
 
-        # ------------------------------------------------------
-        #  PyTorch SVM for other datasets or as fallback
-        # ------------------------------------------------------
-        if trained is None:
-            X_train, X_val, y_train, y_val = train_test_split(
-                train_data, train_labels,
-                test_size=0.30, stratify=train_labels, random_state=42
-            )
-            
-            X_train_res, y_train_res = X_train, y_train
+                mean_val_acc = np.mean(fold_accs)
+                if mean_val_acc > best_val_acc:
+                    # Compute precision, recall, f1 on all folds
+                    all_preds = []
+                    all_true = []
+                    for tr, va in skf.split(train_data, train_labels):
+                        svm_tmp = SVC(kernel='rbf', C=C, gamma=gamma, class_weight='balanced')
+                        svm_tmp.fit(train_data[tr], train_labels[tr])
+                        p = svm_tmp.predict(train_data[va])
+                        all_preds.extend(p)
+                        all_true.extend(train_labels[va])
+                    prec = precision_score(all_true, all_preds, average='macro', zero_division=0)
+                    rec = recall_score(all_true, all_preds, average='macro', zero_division=0)
+                    f1v = f1_score(all_true, all_preds, average='macro', zero_division=0)
 
-            model = train_pytorch_svm(X_train_res, y_train_res, num_classes)
-            trained = model
+                    best_val_metrics = (prec, rec, f1v)
+                    best_val_acc = mean_val_acc
+                    best_model = SVC(kernel='rbf', C=C, gamma=gamma, class_weight='balanced')
 
-            train_preds = predict_pytorch(model, X_train_res)
-            val_preds = predict_pytorch(model, X_val)
-            
-            print(f"Training accuracy: {(train_preds == y_train_res).mean():.4f}")
-            print(f"Validation accuracy: {(val_preds == y_val).mean():.4f}")
-            p, r, f, _ = precision_recall_fscore_support(
-                y_val, val_preds, average="macro", zero_division=0
-            )
-            print(f"Precision (macro): {p:.4f}")
-            print(f"Recall (macro):    {r:.4f}")
-            print(f"F1-score (macro):  {f:.4f}")
+        print(f"[SUMMARY] Dataset {idx} Validation Accuracy (CV): {best_val_acc:.4f}")
+        cv_accuracies.append(best_val_acc)
+        precisions.append(best_val_metrics[0])
+        recalls.append(best_val_metrics[1])
+        f1s.append(best_val_metrics[2])
 
-        # ======================================================
-        #  FINAL MODEL: Retrain on ALL data for test predictions
-        # ======================================================
-        print("\n[INFO] Retraining final model on full dataset...")
-        # PyTorch SVM final model
-        X_full_res, y_full_res = train_data, train_labels
-        final_model = train_pytorch_svm(X_full_res, y_full_res, num_classes)
-        test_preds = predict_pytorch(final_model, test_data)
+        # Train final model on full training data
+        best_model.fit(train_data, train_labels)
+        train_preds = best_model.predict(train_data)
+        train_acc = accuracy_score(train_labels, train_preds)
+        train_accuracies.append(train_acc)
+        test_preds = best_model.predict(test_data)
 
-        if label_shift == 1:
+        if label_shift:
             test_preds += 1
 
         np.savetxt(f"ThekveliPredictions{idx}.txt", test_preds, fmt='%d')
+        print(f"Training Accuracy: {train_acc:.4f}")
+        print(f"Precision (macro): {best_val_metrics[0]:.4f}")
+        print(f"Recall (macro):    {best_val_metrics[1]:.4f}")
+        print(f"F1-score (macro):  {best_val_metrics[2]:.4f}")
         print(f"Saved ThekveliPredictions{idx}.txt")
 
+    return cv_accuracies, train_accuracies, precisions, recalls, f1s
 
-# Run
-if __name__ == "__main__":
-    run_multi_dataset_classification()
+
+# ====================================================
+#  Entry Point
+# ====================================================
+if __name__ == '__main__':
+    cv_accuracies, train_accuracies, precisions, recalls, f1s = run_multi_dataset_classification()
+
+    print("\n" + "="*60)
+    print("OVERALL METRIC SUMMARY")
+    print("="*60)
+
+    if len(cv_accuracies) > 0:
+        for i, acc in enumerate(cv_accuracies, start=1):
+            print(f"Dataset {i}: Validation Accuracy = {acc:.4f}")
+        print("-"*60)
+        print(f"Average Validation Accuracy: {np.mean(cv_accuracies):.4f}")
+        print(f"Average Training Accuracy:   {np.mean(train_accuracies):.4f}")
+        print(f"Average Precision (macro):  {np.mean(precisions):.4f}")
+        print(f"Average Recall (macro):     {np.mean(recalls):.4f}")
+        print(f"Average F1-score (macro):   {np.mean(f1s):.4f}")
